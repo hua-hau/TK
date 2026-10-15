@@ -39,6 +39,83 @@ function toStr(value: unknown): string | null {
   return String(value);
 }
 
+interface ColumnMap {
+  title: number | null;
+  region: number | null;
+  productUrl: number | null;
+  imageUrl: number | null;
+  category: number | null;
+  shopName: number | null;
+  shopType: number | null;
+  operationMode: number | null;
+  price: number | null;
+  priceBrl: number | null;
+  shopSales: number | null;
+  firstThreeDaysSales: number | null;
+  recentThreeDaysSales: number | null;
+  totalSales: number | null;
+  firstThreeDaysRevenue: number | null;
+  firstThreeDaysRevenueBrl: number | null;
+  recentThreeDaysRevenue: number | null;
+  recentThreeDaysRevenueBrl: number | null;
+  totalRevenue: number | null;
+  totalRevenueBrl: number | null;
+  influencerCount: number | null;
+}
+
+function buildHeaderMap(headerRow: unknown[]): ColumnMap {
+  const nameToIndex = new Map<string, number>();
+  for (let i = 0; i < headerRow.length; i++) {
+    const raw = headerRow[i];
+    if (raw === null || raw === undefined) continue;
+    const name = String(raw).trim();
+    if (!name) continue;
+    nameToIndex.set(name, i);
+  }
+
+  const find = (names: string[]): number | null => {
+    for (const n of names) {
+      const idx = nameToIndex.get(n);
+      if (idx !== undefined) return idx;
+    }
+    return null;
+  };
+
+  return {
+    title: find(['商品标题']),
+    region: find(['地区']),
+    productUrl: find(['商品链接']),
+    imageUrl: find(['图片链接']),
+    category: find(['商品类目']),
+    shopName: find(['店铺名称']),
+    shopType: find(['店铺类型']),
+    operationMode: find(['运营模式']),
+    price: find(['售价']),
+    priceBrl: find(['售价(BRL)', '售价(brl)', '售价（BRL）', '售价（brl）']),
+    shopSales: find(['店铺销量', '销量']),
+    firstThreeDaysSales: find(['起始三日销量']),
+    recentThreeDaysSales: find(['近3日销量', '近三日销量']),
+    totalSales: find(['总销量']),
+    firstThreeDaysRevenue: find(['起始三日销售额']),
+    firstThreeDaysRevenueBrl: find(['起始三日销售额(BRL)', '起始三日销售额(brl)', '起始三日销售额（BRL）', '起始三日销售额（brl）']),
+    recentThreeDaysRevenue: find(['近三日销售额', '近3日销售额']),
+    recentThreeDaysRevenueBrl: find(['近三日销售额(BRL)', '近三日销售额(brl)', '近三日销售额（BRL）', '近三日销售额（brl）']),
+    totalRevenue: find(['总销售额']),
+    totalRevenueBrl: find(['总销售额(BRL)', '总销售额(brl)', '总销售额（BRL）', '总销售额（brl）']),
+    influencerCount: find(['关联达人数', '总关联达人', '关联达人']),
+  };
+}
+
+function col(row: unknown[], idx: number | null): string | null {
+  if (idx === null) return null;
+  return toStr(row[idx]);
+}
+
+function colInt(row: unknown[], idx: number | null): number | null {
+  if (idx === null) return null;
+  return toInt(row[idx]);
+}
+
 @Injectable()
 export class SelectionService {
   constructor(@Inject(DRIZZLE_DATABASE) private readonly db: PostgresJsDatabase) {}
@@ -52,7 +129,11 @@ export class SelectionService {
       defval: '',
     });
 
-    // Skip header row
+    if (rows.length === 0) {
+      return { batchId: '', fileName: '', totalCount: 0, filteredCount: 0 };
+    }
+
+    const headerMap = buildHeaderMap(rows[0]);
     const dataRows = rows.slice(1);
     const totalCount = dataRows.length;
 
@@ -74,37 +155,37 @@ export class SelectionService {
     let sortIndex = 1;
 
     for (const row of dataRows) {
-      const category = toStr(row[4]) ?? '';
+      const category = col(row, headerMap.category) ?? '';
       if (shouldFilterCategory(category)) continue;
 
-      const productUrl = toStr(row[2]) ?? '';
+      const productUrl = col(row, headerMap.productUrl) ?? '';
       const productId = extractProductId(productUrl);
       if (!productId) continue;
 
       filteredProducts.push({
         batchId: batch.id,
         productId,
-        title: toStr(row[0]) ?? '',
-        region: toStr(row[1]),
+        title: col(row, headerMap.title) ?? '',
+        region: col(row, headerMap.region),
         productUrl,
-        imageUrl: toStr(row[3]),
+        imageUrl: col(row, headerMap.imageUrl),
         category,
-        shopName: toStr(row[5]),
-        shopType: toStr(row[6]),
-        operationMode: toStr(row[7]),
-        shopSales: toInt(row[8]),
-        price: toStr(row[9]),
-        priceBrl: toStr(row[10]),
-        firstThreeDaysSales: toInt(row[11]),
-        recentThreeDaysSales: toInt(row[12]),
-        totalSales: toInt(row[13]),
-        firstThreeDaysRevenue: toStr(row[14]),
-        firstThreeDaysRevenueBrl: toStr(row[15]),
-        recentThreeDaysRevenue: toStr(row[16]),
-        recentThreeDaysRevenueBrl: toStr(row[17]),
-        totalRevenue: toStr(row[18]),
-        totalRevenueBrl: toStr(row[19]),
-        influencerCount: toInt(row[20]),
+        shopName: col(row, headerMap.shopName),
+        shopType: col(row, headerMap.shopType),
+        operationMode: col(row, headerMap.operationMode),
+        shopSales: colInt(row, headerMap.shopSales),
+        price: col(row, headerMap.price),
+        priceBrl: col(row, headerMap.priceBrl),
+        firstThreeDaysSales: colInt(row, headerMap.firstThreeDaysSales),
+        recentThreeDaysSales: colInt(row, headerMap.recentThreeDaysSales),
+        totalSales: colInt(row, headerMap.totalSales),
+        firstThreeDaysRevenue: col(row, headerMap.firstThreeDaysRevenue),
+        firstThreeDaysRevenueBrl: col(row, headerMap.firstThreeDaysRevenueBrl),
+        recentThreeDaysRevenue: col(row, headerMap.recentThreeDaysRevenue),
+        recentThreeDaysRevenueBrl: col(row, headerMap.recentThreeDaysRevenueBrl),
+        totalRevenue: col(row, headerMap.totalRevenue),
+        totalRevenueBrl: col(row, headerMap.totalRevenueBrl),
+        influencerCount: colInt(row, headerMap.influencerCount),
         decision: 'untouched' as DecisionType,
         sortIndex,
       });

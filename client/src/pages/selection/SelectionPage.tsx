@@ -525,7 +525,7 @@ const SelectionPage = () => {
       {/* 顶部导航栏 */}
       <div className="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 shadow-sm">
         {/* 桌面端顶部栏：带模式切换 */}
-        <div className="hidden lg:flex items-center justify-between h-12 px-4 max-w-7xl mx-auto w-full">
+        <div className={`hidden lg:flex items-center justify-between h-12 w-full ${viewMode === 'bulk' ? 'px-5' : 'px-4 max-w-7xl mx-auto'}`}>
           <div className="flex items-center gap-3">
             <button
               type="button"

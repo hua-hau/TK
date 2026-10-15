@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ExternalLink, Loader2 } from 'lucide-react';
 import { logger } from '@lark-apaas/client-toolkit/logger';
 import { toast } from 'sonner';
@@ -14,6 +14,9 @@ import type {
 } from '@shared/api.interface';
 
 const BULK_PAGE_SIZE = 60;
+const CARD_MIN_WIDTH = 230;
+const GRID_GAP = 16;
+const CONTAINER_PADDING = 20;
 
 const DECISION_LABEL: Record<DecisionType, string> = {
   untouched: '未处理',
@@ -63,6 +66,20 @@ const BulkScreener = ({ batchId, progress, onProgressRefresh }: BulkScreenerProp
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [imageErrors, setImageErrors] = useState<Record<string, number>>({});
+  const [columns, setColumns] = useState(6);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const updateColumns = () => {
+      if (!gridRef.current) return;
+      const containerWidth = gridRef.current.offsetWidth;
+      const cols = Math.max(2, Math.floor((containerWidth + GRID_GAP) / (CARD_MIN_WIDTH + GRID_GAP)));
+      setColumns(cols);
+    };
+    updateColumns();
+    window.addEventListener('resize', updateColumns);
+    return () => window.removeEventListener('resize', updateColumns);
+  }, [products.length]);
 
   const loadPage = useCallback(async (page: number, decision: DecisionType | 'untouched-only') => {
     setLoading(true);
@@ -136,6 +153,32 @@ const BulkScreener = ({ batchId, progress, onProgressRefresh }: BulkScreenerProp
     setSelectedIds(new Set());
   }, []);
 
+  const handleToggleRow = useCallback((rowIndex: number) => {
+    const start = rowIndex * columns;
+    const end = Math.min(start + columns, products.length);
+    const rowIds = products.slice(start, end).map((p: ProductInfo) => p.id);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const allSelected = rowIds.every((id: string) => next.has(id));
+      if (allSelected) {
+        for (const id of rowIds) next.delete(id);
+      } else {
+        for (const id of rowIds) next.add(id);
+      }
+      return next;
+    });
+  }, [columns, products]);
+
+  const isRowAllSelected = useCallback((rowIndex: number): boolean => {
+    const start = rowIndex * columns;
+    const end = Math.min(start + columns, products.length);
+    if (start >= products.length) return false;
+    for (let i = start; i < end; i++) {
+      if (!selectedIds.has(products[i].id)) return false;
+    }
+    return true;
+  }, [columns, products, selectedIds]);
+
   const handleBatchAction = useCallback(async (decision: 'pending' | 'discard') => {
     if (selectedIds.size === 0) return;
     setSubmitting(true);
@@ -173,6 +216,11 @@ const BulkScreener = ({ batchId, progress, onProgressRefresh }: BulkScreenerProp
     return products.every((p) => selectedIds.has(p.id));
   }, [products, selectedIds]);
 
+  const totalRows = useMemo(() => {
+    if (columns === 0) return 0;
+    return Math.ceil(products.length / columns);
+  }, [products.length, columns]);
+
   const filterOptions: { key: DecisionType | 'untouched-only'; label: string }[] = [
     { key: 'untouched-only', label: '未处理' },
     { key: 'pending', label: '待定' },
@@ -186,7 +234,7 @@ const BulkScreener = ({ batchId, progress, onProgressRefresh }: BulkScreenerProp
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col pb-20">
       <div className="fixed top-[140px] left-0 right-0 z-30 bg-gray-50/95 backdrop-blur-sm border-b border-gray-200">
-        <div className="max-w-7xl mx-auto w-full px-4 py-2.5">
+        <div className="w-full px-5 py-2.5">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-gray-700">筛选：</span>
@@ -234,8 +282,8 @@ const BulkScreener = ({ batchId, progress, onProgressRefresh }: BulkScreenerProp
         </div>
       </div>
 
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-4xl px-4 pointer-events-none">
-        <div className="pointer-events-auto flex items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 shadow-lg shadow-amber-900/10">
+      <div className="fixed bottom-4 left-0 right-0 z-50 w-full px-5 pointer-events-none">
+        <div className="pointer-events-auto max-w-full mx-auto flex items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 shadow-lg shadow-amber-900/10">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-amber-900">已选 {totalSelected} 个</span>
             {submitting && <Loader2 className="w-4 h-4 text-amber-700 animate-spin" />}
@@ -262,7 +310,7 @@ const BulkScreener = ({ batchId, progress, onProgressRefresh }: BulkScreenerProp
         </div>
       </div>
 
-      <div className="flex-1 max-w-7xl mx-auto w-full px-4 py-4 pt-14">
+      <div className="flex-1 w-full px-5 py-4 pt-14">
         {products.length === 0 && loading ? (
           <div className="flex flex-col items-center justify-center py-20">
             <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
@@ -274,14 +322,20 @@ const BulkScreener = ({ batchId, progress, onProgressRefresh }: BulkScreenerProp
           </div>
         ) : (
           <div
-            className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3"
+            ref={gridRef}
+            className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-4"
             data-ai-section-type="card-menu"
           >
-            {products.map((product) => {
+            {products.map((product, idx) => {
               const isSelected = selectedIds.has(product.id);
               const proxySrc = getImageProxyUrl(product.imageUrl);
               const hasError = imageErrors[product.id] !== undefined;
               const imgKey = `${product.id}-${imageErrors[product.id] ?? 0}`;
+              const globalIndex = (currentPage - 1) * BULK_PAGE_SIZE + idx + 1;
+              const colIndex = idx % columns;
+              const isLastInRow = colIndex === columns - 1 || idx === products.length - 1;
+              const rowIndex = Math.floor(idx / columns);
+              const isRowSelected = isRowAllSelected(rowIndex);
 
               return (
                 <div
@@ -323,6 +377,9 @@ const BulkScreener = ({ batchId, progress, onProgressRefresh }: BulkScreenerProp
                     >
                       {DECISION_LABEL[product.decision]}
                     </span>
+                    <span className="absolute top-1.5 left-1/2 -translate-x-1/2 z-10 px-1.5 py-0.5 text-[10px] font-medium rounded bg-white/90 text-gray-700 border border-gray-200">
+                      #{globalIndex}
+                    </span>
                     <div
                       className={`absolute top-1.5 right-1.5 z-10 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
                         isSelected
@@ -332,6 +389,30 @@ const BulkScreener = ({ batchId, progress, onProgressRefresh }: BulkScreenerProp
                     >
                       {isSelected && <Check className="w-3 h-3 text-white" />}
                     </div>
+                    {isLastInRow && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleRow(rowIndex);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleToggleRow(rowIndex);
+                          }
+                        }}
+                        aria-label={isRowSelected ? `取消选择第${rowIndex + 1}行` : `选择第${rowIndex + 1}行`}
+                        className={`absolute bottom-1.5 right-1.5 z-20 w-6 h-6 rounded-md border flex items-center justify-center transition-all ${
+                          isRowSelected
+                            ? 'bg-blue-500 border-blue-500 text-white'
+                            : 'bg-white/90 border-gray-300 text-gray-500 hover:bg-white hover:border-blue-400 hover:text-blue-500'
+                        }`}
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
 
                   <div className="p-2 space-y-0.5">

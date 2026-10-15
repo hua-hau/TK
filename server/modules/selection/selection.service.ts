@@ -23,9 +23,44 @@ function shouldFilterCategory(category: string): boolean {
   return false;
 }
 
-function extractProductId(url: string): string | null {
+function extractProductIdFromTikTok(url: string): string | null {
+  if (!url) return null;
   const match = url.match(/\/product\/(\d+)/);
   return match ? match[1] : null;
+}
+
+function extractProductIdFromFastMoss(url: string): string | null {
+  if (!url) return null;
+  const match = url.match(/\/detail\/(\d+)/);
+  return match ? match[1] : null;
+}
+
+function resolveProductId(
+  row: unknown[],
+  headerMap: ColumnMap,
+): { productId: string | null; productUrl: string | null } {
+  const tiktokUrl = col(row, headerMap.productUrl) ?? '';
+  const fromTikTok = extractProductIdFromTikTok(tiktokUrl);
+  if (fromTikTok) {
+    return { productId: fromTikTok, productUrl: tiktokUrl };
+  }
+
+  const fastmossUrl = col(row, headerMap.fastmossUrl) ?? '';
+  const fromFastMoss = extractProductIdFromFastMoss(fastmossUrl);
+  if (fromFastMoss) {
+    const agencyUrl = `https://shop.tiktok.com/view/product/${fromFastMoss}?source=agency&region=br`;
+    return { productId: fromFastMoss, productUrl: agencyUrl };
+  }
+
+  const idCol = col(row, headerMap.productIdCol) ?? '';
+  const idMatch = idCol.match(/^(\d+)$/);
+  if (idMatch) {
+    const pid = idMatch[1];
+    const agencyUrl = `https://shop.tiktok.com/view/product/${pid}?source=agency&region=br`;
+    return { productId: pid, productUrl: agencyUrl };
+  }
+
+  return { productId: null, productUrl: tiktokUrl || null };
 }
 
 function toInt(value: unknown): number | null {
@@ -43,6 +78,8 @@ interface ColumnMap {
   title: number | null;
   region: number | null;
   productUrl: number | null;
+  fastmossUrl: number | null;
+  productIdCol: number | null;
   imageUrl: number | null;
   category: number | null;
   shopName: number | null;
@@ -61,6 +98,7 @@ interface ColumnMap {
   totalRevenue: number | null;
   totalRevenueBrl: number | null;
   influencerCount: number | null;
+  commissionRate: number | null;
 }
 
 function buildHeaderMap(headerRow: unknown[]): ColumnMap {
@@ -82,27 +120,46 @@ function buildHeaderMap(headerRow: unknown[]): ColumnMap {
   };
 
   return {
-    title: find(['商品标题']),
-    region: find(['地区']),
-    productUrl: find(['商品链接']),
-    imageUrl: find(['图片链接']),
-    category: find(['商品类目']),
-    shopName: find(['店铺名称']),
+    title: find(['商品标题', '商品名称']),
+    region: find(['地区', '国家/地区', '国家/地区 ']),
+    productUrl: find([
+      '商品链接',
+      'TikTok官网商品详情页',
+      'TikTok 官网商品详情页',
+      'TikTok商品落地页地址',
+      'TikTok商品落地页',
+    ]),
+    fastmossUrl: find([
+      'FastMoss商品详情页',
+      'FastMoss 商品详情页',
+      'FastMoss商品详情页地址',
+    ]),
+    productIdCol: find(['商品ID', '商品id']),
+    imageUrl: find(['图片链接', '商品封面链接', '商品图片']),
+    category: find(['商品类目', '商品分类']),
+    shopName: find(['店铺名称', '所属店铺名称', '店铺名']),
     shopType: find(['店铺类型']),
     operationMode: find(['运营模式']),
     price: find(['售价']),
-    priceBrl: find(['售价(BRL)', '售价(brl)', '售价（BRL）', '售价（brl）']),
-    shopSales: find(['店铺销量', '销量']),
+    priceBrl: find([
+      '售价(BRL)', '售价(brl)', '售价（BRL）', '售价（brl）',
+      '售价', '商品售价',
+    ]),
+    shopSales: find(['店铺销量', '店铺总销量', '销量']),
     firstThreeDaysSales: find(['起始三日销量']),
-    recentThreeDaysSales: find(['近3日销量', '近三日销量']),
+    recentThreeDaysSales: find(['近3日销量', '近三日销量', '7天销量']),
     totalSales: find(['总销量']),
     firstThreeDaysRevenue: find(['起始三日销售额']),
     firstThreeDaysRevenueBrl: find(['起始三日销售额(BRL)', '起始三日销售额(brl)', '起始三日销售额（BRL）', '起始三日销售额（brl）']),
-    recentThreeDaysRevenue: find(['近三日销售额', '近3日销售额']),
+    recentThreeDaysRevenue: find(['近三日销售额', '近3日销售额', '7天销售额']),
     recentThreeDaysRevenueBrl: find(['近三日销售额(BRL)', '近三日销售额(brl)', '近三日销售额（BRL）', '近三日销售额（brl）']),
-    totalRevenue: find(['总销售额']),
+    totalRevenue: find(['总销售额', '销售额']),
     totalRevenueBrl: find(['总销售额(BRL)', '总销售额(brl)', '总销售额（BRL）', '总销售额（brl）']),
-    influencerCount: find(['关联达人数', '总关联达人', '关联达人']),
+    influencerCount: find([
+      '关联达人数', '关联达人总数', '带货达人总数',
+      '总关联达人', '关联达人',
+    ]),
+    commissionRate: find(['佣金比例']),
   };
 }
 
@@ -158,8 +215,7 @@ export class SelectionService {
       const category = col(row, headerMap.category) ?? '';
       if (shouldFilterCategory(category)) continue;
 
-      const productUrl = col(row, headerMap.productUrl) ?? '';
-      const productId = extractProductId(productUrl);
+      const { productId, productUrl } = resolveProductId(row, headerMap);
       if (!productId) continue;
 
       filteredProducts.push({
@@ -167,7 +223,7 @@ export class SelectionService {
         productId,
         title: col(row, headerMap.title) ?? '',
         region: col(row, headerMap.region),
-        productUrl,
+        productUrl: productUrl ?? '',
         imageUrl: col(row, headerMap.imageUrl),
         category,
         shopName: col(row, headerMap.shopName),
@@ -449,7 +505,7 @@ export class SelectionService {
   }
 
   async proxyImage(url: string): Promise<{ buffer: Buffer; contentType: string }> {
-    const allowedHosts = ['image.zhenghedata.com'];
+    const allowedHosts = ['image.zhenghedata.com', 's.500fd.com'];
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(url);

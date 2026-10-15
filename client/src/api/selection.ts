@@ -2,6 +2,8 @@ import { logger } from '@lark-apaas/client-toolkit/logger';
 import { axiosForBackend } from '@lark-apaas/client-toolkit/utils/getAxiosForBackend';
 
 import type {
+  BatchDecisionRequest,
+  BatchDecisionResponse,
   BatchListResponse,
   BatchProgressResponse,
   DecisionRequest,
@@ -90,6 +92,23 @@ export async function setProductDecision(
     return response.data;
   } catch (error) {
     logger.error('设置判定失败', error);
+    throw error;
+  }
+}
+
+export async function batchSetDecision(
+  batchId: string,
+  productIds: string[],
+  decision: 'pending' | 'discard',
+): Promise<BatchDecisionResponse> {
+  try {
+    const response = await axiosForBackend.post(
+      `/api/selection/batches/${batchId}/batch-decision`,
+      { productIds, decision } satisfies BatchDecisionRequest,
+    );
+    return response.data;
+  } catch (error) {
+    logger.error('批量判定失败', error);
     throw error;
   }
 }

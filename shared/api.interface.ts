@@ -75,6 +75,15 @@ export interface DecisionRequest {
   decision: DecisionType;
 }
 
+export interface BatchDecisionRequest {
+  productIds: string[];
+  decision: 'pending' | 'discard';
+}
+
+export interface BatchDecisionResponse {
+  updatedCount: number;
+}
+
 export interface DeleteBatchResponse {
   success: boolean;
   deletedBatchId: string;

@@ -461,6 +461,47 @@ export class SelectionService {
     return { decision: updated[0].decision as DecisionType };
   }
 
+  async batchSetDecision(
+    batchId: string,
+    productIds: string[],
+    decision: 'pending' | 'discard',
+  ): Promise<{ updatedCount: number }> {
+    if (productIds.length === 0) {
+      return { updatedCount: 0 };
+    }
+    const MAX_BATCH = 500;
+    if (productIds.length > MAX_BATCH) {
+      throw new BadRequestException(`单次最多处理 ${MAX_BATCH} 个商品`);
+    }
+
+    const updated = await this.db
+      .update(products)
+      .set({ decision })
+      .where(
+        and(
+          eq(products.batchId, batchId),
+          inArray(products.id, productIds),
+        ),
+      )
+      .returning({ id: products.id });
+
+    if (updated.length > 0) {
+      const untouchedResult = await this.db
+        .select({ count: count() })
+        .from(products)
+        .where(and(eq(products.batchId, batchId), eq(products.decision, 'untouched')));
+
+      const untouchedCount = Number(untouchedResult[0]?.count ?? 0);
+
+      await this.db
+        .update(batches)
+        .set({ pendingCount: untouchedCount })
+        .where(eq(batches.id, batchId));
+    }
+
+    return { updatedCount: updated.length };
+  }
+
   async exportBatch(batchId: string, decision: 'keep' | 'pending'): Promise<{ buffer: Buffer; fileName: string }> {
     const [batchResult, productRows] = await Promise.all([
       this.db.select({ fileName: batches.fileName }).from(batches).where(eq(batches.id, batchId)),

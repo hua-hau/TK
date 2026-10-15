@@ -33,6 +33,7 @@ import type {
   ProductInfo,
 } from '@shared/api.interface';
 import { UniversalLink } from '@lark-apaas/client-toolkit/components/UniversalLink';
+import BulkScreener from '@client/src/components/selection/BulkScreener';
 
 const PAGE_SIZE = 20;
 
@@ -98,15 +99,16 @@ const SelectionPage = () => {
   const [indexInput, setIndexInput] = useState('');
   const [qrDialogOpen, setQrDialogOpen] = useState(false);
   const [filterDecision, setFilterDecision] = useState<FilterDecision>(null);
+  const [viewMode, setViewMode] = useState<'single' | 'bulk'>('single');
   const [jumpPanelOpen, setJumpPanelOpen] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
-  const [currentProductId, setCurrentProductId] = useState<string | null>(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
   const [imageErrors, setImageErrors] = useState<Record<string, number>>({});
 
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const isInitialLoad = useRef(true);
-  const visibleRatios = useRef<Map<string, number>>(new Map());
+  const didInitialScroll = useRef(false);
 
   const processedCount = progress?.processed ?? 0;
   const totalCount = progress?.total ?? 0;
@@ -164,9 +166,10 @@ const SelectionPage = () => {
   );
 
   const currentProduct = useMemo(() => {
-    if (!currentProductId) return null;
-    return products.find((p) => p.id === currentProductId) ?? null;
-  }, [currentProductId, products]);
+    if (products.length === 0) return null;
+    if (currentIndex < 0 || currentIndex >= products.length) return null;
+    return products[currentIndex] ?? null;
+  }, [currentIndex, products]);
 
   const fetchProgress = useCallback(async () => {
     if (!batchId) return;
@@ -215,11 +218,11 @@ const SelectionPage = () => {
   useEffect(() => {
     if (!batchId) return;
     isInitialLoad.current = true;
+    didInitialScroll.current = false;
     setProducts([]);
     setHasMore(true);
     setCurrentPage(1);
-    setCurrentProductId(null);
-    visibleRatios.current.clear();
+    setCurrentIndex(0);
     fetchProgress();
     loadPage(1).finally(() => {
       isInitialLoad.current = false;
@@ -250,41 +253,51 @@ const SelectionPage = () => {
     return () => observer.disconnect();
   }, [hasMore, loading, currentPage, loadPage]);
 
-  // IntersectionObserver 追踪当前商品（最可见的那个）
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const id = entry.target.getAttribute('data-product-id');
-          if (!id) continue;
-          if (entry.isIntersecting) {
-            visibleRatios.current.set(id, entry.intersectionRatio);
-          } else {
-            visibleRatios.current.delete(id);
-          }
-        }
-        // 选出可见比例最高的作为当前商品
-        let bestId: string | null = null;
-        let bestRatio = 0;
-        for (const [id, ratio] of visibleRatios.current) {
-          if (ratio > bestRatio) {
-            bestRatio = ratio;
-            bestId = id;
-          }
-        }
-        if (bestId && bestRatio > 0.2) {
-          setCurrentProductId(bestId);
-        }
-      },
-      { threshold: [0.1, 0.25, 0.5, 0.75, 0.9] },
-    );
-
-    for (const [id, el] of cardRefs.current) {
-      observer.observe(el);
+  // 滚动到指定索引的商品
+  const scrollToIndex = useCallback((idx: number) => {
+    if (idx < 0 || idx >= products.length) return;
+    const product = products[idx];
+    if (!product) return;
+    const el = cardRefs.current.get(product.id);
+    if (el) {
+      const behavior: ScrollBehavior = didInitialScroll.current
+        ? 'smooth'
+        : 'instant';
+      el.scrollIntoView({ behavior, block: 'center' });
+      didInitialScroll.current = true;
     }
+  }, [products]);
 
-    return () => observer.disconnect();
-  }, [products.length]);
+  // currentIndex 变化时自动滚动到对应商品
+  useEffect(() => {
+    if (products.length === 0) return;
+    const safeIndex = Math.min(currentIndex, products.length - 1);
+    scrollToIndex(safeIndex);
+  }, [currentIndex, products.length, scrollToIndex]);
+
+  // 初始加载完成后自动聚焦第一个商品（products 从无到有时触发）
+  useEffect(() => {
+    if (
+      !isInitialLoad.current &&
+      products.length > 0 &&
+      !didInitialScroll.current
+    ) {
+      scrollToIndex(0);
+    }
+  }, [products.length, scrollToIndex]);
+
+  // 接近末尾时自动加载下一页
+  useEffect(() => {
+    if (
+      hasMore &&
+      !loading &&
+      !isInitialLoad.current &&
+      products.length > 0 &&
+      currentIndex >= products.length - 5
+    ) {
+      loadPage(currentPage + 1);
+    }
+  }, [currentIndex, products.length, hasMore, loading, currentPage, loadPage]);
 
   const handleImageError = useCallback((productId: string) => {
     setImageErrors((prev) => ({ ...prev, [productId]: Date.now() }));
@@ -295,47 +308,33 @@ const SelectionPage = () => {
   }, []);
 
   const handleDecision = useCallback(
-    async (productId: string, decision: DecisionType) => {
+    async (decision: DecisionType) => {
+      if (currentIndex < 0 || currentIndex >= products.length) return;
+      const product = products[currentIndex];
+      if (!product) return;
+
+      const productId = product.id;
       const prevProducts = products;
-      const currentIndex = prevProducts.findIndex((p) => p.id === productId);
+      const willBeRemoved = filterDecision !== null && decision !== filterDecision;
 
-      // 筛选模式下，若判定结果不等于当前筛选值，从列表移除（乐观更新）
-      if (filterDecision !== null && decision !== filterDecision) {
+      // 乐观更新
+      if (willBeRemoved) {
         setProducts((prev) => prev.filter((p) => p.id !== productId));
-
-        // 筛选待定且改成要/弃，自动滚动到下一个
-        if (
-          filterDecision === 'pending' &&
-          (decision === 'keep' || decision === 'discard') &&
-          currentIndex >= 0
-        ) {
-          const remainingAfter = prevProducts
-            .slice(currentIndex + 1)
-            .filter((p) => p.decision === filterDecision);
-          if (remainingAfter.length > 0) {
-            const nextProduct = remainingAfter[0];
-            const nextEl = cardRefs.current.get(nextProduct.id);
-            if (nextEl) {
-              setTimeout(() => {
-                nextEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }, 100);
-            }
-          }
+        // 商品被移除，currentIndex 保持不变（下一个自动顶上来）
+        // 但如果移除的是最后一个，回退一位
+        const newLength = prevProducts.length - 1;
+        if (newLength <= 0) {
+          setCurrentIndex(0);
+        } else if (currentIndex >= newLength) {
+          setCurrentIndex(newLength - 1);
         }
       } else {
-        // 非筛选模式或判定仍属于当前筛选，原地更新 + 滚动到下一个
         setProducts((prev) =>
           prev.map((p) => (p.id === productId ? { ...p, decision } : p)),
         );
-        if (currentIndex >= 0 && currentIndex < prevProducts.length - 1) {
-          const nextProduct = prevProducts[currentIndex + 1];
-          const nextEl = cardRefs.current.get(nextProduct.id);
-          if (nextEl) {
-            setTimeout(() => {
-              nextEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }, 100);
-          }
-        }
+        // 前进到下一个商品
+        const nextIndex = Math.min(currentIndex + 1, prevProducts.length - 1);
+        setCurrentIndex(nextIndex);
       }
 
       try {
@@ -344,25 +343,18 @@ const SelectionPage = () => {
       } catch (error) {
         logger.error('判定失败', error);
         toast.error('判定失败，请重试');
-        // 回滚
-        setProducts((prev) => {
-          const found = prev.find((p) => p.id === productId);
-          if (found) {
-            return prev.map((p) =>
-              p.id === productId ? { ...p, decision: 'untouched' } : p,
-            );
-          }
-          // 该商品已被移除，加回来
-          const original = prevProducts.find((p) => p.id === productId);
-          if (original) {
-            return [...prev, { ...original, decision: 'untouched' }];
-          }
-          return prev;
-        });
+        // 回滚：恢复原始列表与索引
+        setProducts(prevProducts);
+        const rollbackIndex = prevProducts.findIndex(
+          (p: ProductInfo) => p.id === productId,
+        );
+        if (rollbackIndex >= 0) {
+          setCurrentIndex(rollbackIndex);
+        }
         fetchProgress();
       }
     },
-    [products, fetchProgress, filterDecision],
+    [currentIndex, products, fetchProgress, filterDecision],
   );
 
   const handleJumpPage = useCallback(async () => {
@@ -392,16 +384,19 @@ const SelectionPage = () => {
       setCurrentPage(page);
       setHasMore(page < totalPages && allItems.length === page * PAGE_SIZE);
 
-      // 滚动到该页第一个商品
+      // 滚动到该页第一个商品并设为当前聚焦
       const firstIdx = (page - 1) * PAGE_SIZE;
       const firstItem = allItems[firstIdx];
       if (firstItem) {
+        didInitialScroll.current = false;
+        setCurrentIndex(firstIdx);
         setTimeout(() => {
           const el = cardRefs.current.get(firstItem.id);
           el?.scrollIntoView({
             behavior: 'instant' as ScrollBehavior,
-            block: 'start',
+            block: 'center',
           });
+          didInitialScroll.current = true;
         }, 50);
       }
     } catch (error) {
@@ -442,15 +437,19 @@ const SelectionPage = () => {
         targetPage < totalPages && allItems.length === targetPage * PAGE_SIZE,
       );
 
-      // 滚动到目标商品
-      const targetItem = allItems[index - 1];
+      // 滚动到目标商品并设为当前聚焦
+      const targetIdx = index - 1;
+      const targetItem = allItems[targetIdx];
       if (targetItem) {
+        didInitialScroll.current = false;
+        setCurrentIndex(targetIdx);
         setTimeout(() => {
           const el = cardRefs.current.get(targetItem.id);
           el?.scrollIntoView({
             behavior: 'instant' as ScrollBehavior,
-            block: 'start',
+            block: 'center',
           });
+          didInitialScroll.current = true;
         }, 50);
       }
     } catch (error) {
@@ -490,10 +489,12 @@ const SelectionPage = () => {
 
   const handleStatClick = useCallback((key: FilterDecision) => {
     setFilterDecision(key);
+    setCurrentIndex(0);
   }, []);
 
   const handleClearFilter = useCallback(() => {
     setFilterDecision(null);
+    setCurrentIndex(0);
   }, []);
 
   const setCardRef = useCallback((id: string) => {
@@ -504,6 +505,10 @@ const SelectionPage = () => {
         cardRefs.current.delete(id);
       }
     };
+  }, []);
+
+  const handleCardClick = useCallback((idx: number) => {
+    setCurrentIndex(idx);
   }, []);
 
   const showEmpty =
@@ -519,7 +524,77 @@ const SelectionPage = () => {
     <div className="min-h-screen bg-gray-50 flex flex-col max-w-full overflow-x-hidden">
       {/* 顶部导航栏 */}
       <div className="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 shadow-sm">
-        <div className="flex items-center justify-between h-12 px-3 max-w-lg mx-auto w-full">
+        {/* 桌面端顶部栏：带模式切换 */}
+        <div className="hidden lg:flex items-center justify-between h-12 px-4 max-w-7xl mx-auto w-full">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => navigate('/')}
+              className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-gray-100 active:bg-gray-200"
+              aria-label="返回首页"
+            >
+              <ArrowLeft className="w-5 h-5 text-gray-700" />
+            </button>
+            <span className="text-sm font-medium text-gray-800">
+              已处理 {processedCount} / 总数 {totalCount}
+            </span>
+            <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setViewMode('single')}
+                className={`px-3 py-1 text-sm font-medium transition-colors ${
+                  viewMode === 'single'
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                逐个精选
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('bulk')}
+                className={`px-3 py-1 text-sm font-medium transition-colors ${
+                  viewMode === 'bulk'
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                批量初筛
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setExportDialogOpen(true)}
+              className="px-3 h-9 flex items-center gap-1.5 rounded-lg hover:bg-gray-100 active:bg-gray-200 text-sm text-gray-700"
+              aria-label="导出清单"
+            >
+              <Download className="w-4 h-4" />
+              导出
+            </button>
+            <button
+              type="button"
+              onClick={() => setQrDialogOpen(true)}
+              className="px-3 h-9 flex items-center gap-1.5 rounded-lg hover:bg-gray-100 active:bg-gray-200 text-sm text-gray-700"
+              aria-label="手机扫码"
+            >
+              <QrCode className="w-4 h-4" />
+              手机扫码
+            </button>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-gray-100 active:bg-gray-200"
+              aria-label="刷新"
+            >
+              <RefreshCw className="w-4 h-4 text-gray-600" />
+            </button>
+          </div>
+        </div>
+
+        {/* 手机端顶部栏 */}
+        <div className="flex items-center justify-between h-12 px-3 max-w-lg mx-auto w-full lg:hidden">
           <button
             type="button"
             onClick={() => navigate('/')}
@@ -729,6 +804,19 @@ const SelectionPage = () => {
         </DialogContent>
       </Dialog>
 
+      {/* 桌面端批量初筛视图 */}
+      <div className="hidden lg:block pt-[140px]">
+        {viewMode === 'bulk' && (
+          <BulkScreener
+            batchId={batchId}
+            progress={progress}
+            onProgressRefresh={fetchProgress}
+          />
+        )}
+      </div>
+
+      {/* 逐个精选视图（手机+桌面单条模式） */}
+      <div className={viewMode === 'bulk' ? 'hidden lg:hidden' : ''}>
       {/* 商品卡片流 */}
       <div className="flex-1 w-full pt-[112px] pb-[150px] px-3 max-w-lg mx-auto">
         {showEmpty ? (
@@ -749,23 +837,34 @@ const SelectionPage = () => {
           </div>
         ) : (
           <div className="flex flex-col gap-3 w-full" data-ai-section-type="card-list">
-            {products.map((product, idx) => {
-              const isCurrent = currentProductId === product.id;
-              const proxySrc = getImageProxyUrl(product.imageUrl);
-              const hasError = imageErrors[product.id] !== undefined;
-              const imgKey = `${product.id}-${imageErrors[product.id] ?? 0}`;
+             {products.map((product, idx) => {
+               const isCurrent = currentIndex === idx;
+               const proxySrc = getImageProxyUrl(product.imageUrl);
+               const hasError = imageErrors[product.id] !== undefined;
+               const imgKey = `${product.id}-${imageErrors[product.id] ?? 0}`;
 
-              return (
-                <div
-                  key={product.id}
-                  ref={setCardRef(product.id)}
-                  data-product-id={product.id}
-                  className={`bg-white rounded-xl shadow-sm overflow-hidden border w-full max-w-full transition-all ${
-                    isCurrent
-                      ? 'border-blue-500 ring-2 ring-blue-500/30'
-                      : 'border-gray-100'
-                  }`}
-                >
+               return (
+                 <div
+                   key={product.id}
+                   ref={setCardRef(product.id)}
+                   data-product-id={product.id}
+                   role="button"
+                   tabIndex={0}
+                   onClick={() => handleCardClick(idx)}
+                   onKeyDown={(e) => {
+                     if (e.key === 'Enter' || e.key === ' ') {
+                       e.preventDefault();
+                       handleCardClick(idx);
+                     }
+                   }}
+                   aria-pressed={isCurrent}
+                   aria-label={`${product.title}${isCurrent ? '（当前）' : ''}`}
+                   className={`bg-white rounded-xl shadow-sm overflow-hidden border w-full max-w-full transition-all cursor-pointer ${
+                     isCurrent
+                       ? 'border-blue-500 ring-2 ring-blue-500/30'
+                       : 'border-gray-100 hover:border-gray-200'
+                   }`}
+                 >
                   {/* 状态标签 + 序号 + 当前标记 */}
                   <div className="relative w-full">
                     <span
@@ -798,12 +897,15 @@ const SelectionPage = () => {
                           <span className="text-sm text-gray-500">
                             图片加载失败
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => handleImageRetry(product.id)}
-                            className="flex items-center gap-1 px-3 py-1 text-xs text-blue-600 bg-white rounded border border-gray-300 hover:bg-gray-50 active:bg-gray-100"
-                            aria-label="重试加载图片"
-                          >
+                           <button
+                             type="button"
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               handleImageRetry(product.id);
+                             }}
+                             className="flex items-center gap-1 px-3 py-1 text-xs text-blue-600 bg-white rounded border border-gray-300 hover:bg-gray-50 active:bg-gray-100"
+                             aria-label="重试加载图片"
+                           >
                             <RefreshCcw className="w-3 h-3" />
                             重试
                           </button>
@@ -857,7 +959,7 @@ const SelectionPage = () => {
           {/* 当前商品信息 */}
           <div className="px-3 pt-2 pb-1 flex items-center justify-between gap-2 border-b border-gray-100">
             <span className="text-xs text-gray-700 truncate flex-1">
-              {currentProduct?.title ?? '请滚动到商品'}
+              {currentProduct?.title ?? '--'}
             </span>
             <span className="text-sm font-bold text-red-500 shrink-0">
               {currentProduct
@@ -888,10 +990,8 @@ const SelectionPage = () => {
           <div className="flex gap-2 p-3">
             <button
               type="button"
-              onClick={() =>
-                currentProductId && handleDecision(currentProductId, 'keep')
-              }
-              disabled={!currentProductId}
+              onClick={() => handleDecision('keep')}
+              disabled={!currentProduct}
               className="flex-1 h-11 bg-green-500 text-white font-medium rounded-lg hover:bg-green-600 active:bg-green-700 text-base disabled:bg-gray-300 disabled:cursor-not-allowed"
               data-ai-section-type="button"
             >
@@ -899,10 +999,8 @@ const SelectionPage = () => {
             </button>
             <button
               type="button"
-              onClick={() =>
-                currentProductId && handleDecision(currentProductId, 'discard')
-              }
-              disabled={!currentProductId}
+              onClick={() => handleDecision('discard')}
+              disabled={!currentProduct}
               className="flex-1 h-11 bg-red-500 text-white font-medium rounded-lg hover:bg-red-600 active:bg-red-700 text-base disabled:bg-gray-300 disabled:cursor-not-allowed"
               data-ai-section-type="button"
             >
@@ -910,10 +1008,8 @@ const SelectionPage = () => {
             </button>
             <button
               type="button"
-              onClick={() =>
-                currentProductId && handleDecision(currentProductId, 'pending')
-              }
-              disabled={!currentProductId}
+              onClick={() => handleDecision('pending')}
+              disabled={!currentProduct}
               className="flex-1 h-11 bg-amber-400 text-gray-900 font-medium rounded-lg hover:bg-amber-500 active:bg-amber-600 text-base disabled:bg-gray-300 disabled:cursor-not-allowed"
               data-ai-section-type="button"
             >
@@ -921,6 +1017,7 @@ const SelectionPage = () => {
             </button>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

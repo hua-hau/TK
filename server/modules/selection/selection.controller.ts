@@ -16,7 +16,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { SelectionService } from './selection.service';
-import type { DecisionRequest, DecisionType } from '@shared/api.interface';
+import type { BatchDecisionRequest, DecisionRequest, DecisionType } from '@shared/api.interface';
 
 const VALID_DECISIONS: DecisionType[] = ['untouched', 'keep', 'discard', 'pending'];
 const VALID_EXPORT_DECISIONS = ['keep', 'pending'] as const;
@@ -89,6 +89,20 @@ export class SelectionController {
       throw new BadRequestException('无效的 decision 值');
     }
     return this.selectionService.setDecision(productId, decision);
+  }
+
+  @Post('batches/:batchId/batch-decision')
+  async batchDecision(
+    @Param('batchId') batchId: string,
+    @Body() body: BatchDecisionRequest,
+  ) {
+    if (!body.productIds || !Array.isArray(body.productIds)) {
+      throw new BadRequestException('productIds 必须是数组');
+    }
+    if (body.decision !== 'pending' && body.decision !== 'discard') {
+      throw new BadRequestException('批量操作仅支持 pending 或 discard');
+    }
+    return this.selectionService.batchSetDecision(batchId, body.productIds, body.decision);
   }
 
   @Get('batches/:batchId/export')
